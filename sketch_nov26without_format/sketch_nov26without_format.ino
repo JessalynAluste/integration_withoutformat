@@ -1,0 +1,130 @@
+#include <HX711_ADC.h>
+#include <EEPROM.h>
+
+#include <OneWire.h>
+#include <DallasTemperature.h>
+
+#include <ESP32Servo.h>
+#include "BluetoothSerial.h";
+
+// ------------------- BLUETOOTH --------------------
+BluetoothSerial SerialBT;
+
+// ------------------- LOAD CELL --------------------
+const int HX711_dout = 4;
+const int HX711_sck  = 5;
+HX711_ADC LoadCell(HX711_dout, HX711_sck);
+const int calVal_eepromAdress = 0;
+
+// ------------------- TEMPERATURE SENSOR --------------------
+#define ONE_WIRE_BUS 15
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
+
+// ------------------- SERVO --------------------
+Servo myservo;
+int servoPin = 23;
+
+// ------------------- TIMING / FILTER -------------------
+const float FAST_ALPHA = 0.90f;
+const float SLOW_ALPHA = 0.40f;
+const float JUMP_THRESHOLD_KG = 0.02f;
+const float DETECT_THRESHOLD_KG = 0.02f;
+const unsigned long REPORT_INTERVAL_MS = 150;
+const unsigned long TEMP_INTERVAL_MS = 2000;
+
+// ------------------- SERVO NON-BLOCKING -----------------
+int servoAngle = 180;
+int servoDir = 1;
+const unsigned long SERVO_STEP_MS = 20;
+const int SERVO_STEP = 5;
+unsigned long lastServoStep = 0;
+
+// ------------------- VARIABLES --------------------
+float filteredKg = 0.0f;
+float rawBuf = 0.0f;
+unsigned long lastReportTime = 0;
+unsigned long lastTempTime = 0;
+
+void setup() {
+  Serial.begin(115200);
+  delay(10);
+
+  // ------------------- EEPROM -------------------
+  EEPROM.begin(512);
+
+  // ------------------- LOAD CELL -------------------
+  LoadCell.begin();
+  float calibrationValue = 20188.57;
+  EEPROM.get(calVal_eepromAdress, calibrationValue);
+  if (!(calibrationValue > 0.0 && calibrationValue < 1e9)) {
+    calibrationValue = 20188.57;
+    EEPROM.put(calVal_eepromAdress, calibrationValue);
+    EEPROM.commit();
+  }
+  LoadCell.setCalFactor(calibrationValue);
+  LoadCell.start(2000, true);
+
+  // ------------------- TEMPERATURE -------------------
+  sensors.begin();
+
+  // ------------------- SERVO -------------------
+  myservo.attach(servoPin, 500, 2400);
+  myservo.write(servoAngle);
+  lastServoStep = millis();
+
+  lastReportTime = millis();
+  lastTempTime = millis();
+
+  // ------------------- BLUETOOTH -------------------
+  SerialBT.begin("ESP32_Test");
+  Serial.println("Bluetooth started. Pair with 'ESP32_Test'");
+}
+
+void loop() {
+  unsigned long now = millis();
+
+  // HX711
+  if (LoadCell.update()) {
+    rawBuf = LoadCell.getData();
+    float diff = fabs(rawBuf - filteredKg);
+    float alpha = (diff > JUMP_THRESHOLD_KG) ? FAST_ALPHA : SLOW_ALPHA;
+    filteredKg = alpha * rawBuf + (1.0f - alpha) * filteredKg;
+  }
+
+  // Temperature reading
+  if (now - lastTempTime >= TEMP_INTERVAL_MS) {
+    sensors.requestTemperatures();
+    float tempC = sensors.getTempCByIndex(0);
+    if (isnan(tempC)) tempC = 0.0f;
+
+    float outKg = (filteredKg >= DETECT_THRESHOLD_KG) ? filteredKg : 0.0f;
+
+    // Print to Serial for monitoring (since Firebase is removed)
+    Serial.print("Temperature: ");
+    Serial.print(tempC);
+    Serial.print(" C, Weight: ");
+    Serial.print(outKg);
+    Serial.print(" kg, Servo Angle: ");
+    Serial.println(servoAngle);
+
+    lastTempTime = now;
+  }
+
+  // ------------------- SERVO FULL 180° SWEEP -------------------
+  if (now - lastServoStep >= SERVO_STEP_MS) {
+    servoAngle += servoDir * SERVO_STEP;
+
+    if (servoAngle >= 180) {   // reached right end
+      servoAngle = 180;
+      servoDir = -1;
+    }
+    else if (servoAngle <= 0) { // reached left end
+      servoAngle = 0;
+      servoDir = 1;
+    }
+
+    myservo.write(servoAngle);
+    lastServoStep = now;
+  }
+}
