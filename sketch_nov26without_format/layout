@@ -1,0 +1,106 @@
+package com.example.feedflow
+
+import android.Manifest
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothSocket
+import android.content.pm.PackageManager
+import androidx.appcompat.app.AppCompatActivity
+import android.os.Bundle
+import android.widget.Button
+import android.widget.EditText
+import android.widget.TextView
+import androidx.core.app.ActivityCompat
+import java.io.InputStream
+import java.io.OutputStream
+import java.util.*
+
+class MainActivity : AppCompatActivity() {
+
+    private val BT_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
+    private val DEVICE_NAME = "ESP32_Test"
+
+    private lateinit var btAdapter: BluetoothAdapter
+    private lateinit var btDevice: BluetoothDevice
+    private var btSocket: BluetoothSocket? = null
+    private var outputStream: OutputStream? = null
+
+    private lateinit var txtData: TextView
+    private lateinit var txtCommand: EditText
+    private lateinit var btnSend: Button
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+
+        txtData = findViewById(R.id.txtData)
+        txtCommand = findViewById(R.id.txtCommand)
+        btnSend = findViewById(R.id.btnSend)
+
+        requestPermissions()
+
+        btAdapter = BluetoothAdapter.getDefaultAdapter()
+
+        connectToESP32()
+        readBluetoothData()
+
+        btnSend.setOnClickListener {
+            val msg = txtCommand.text.toString()
+            sendToESP32(msg)
+        }
+    }
+
+    private fun requestPermissions() {
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_SCAN
+            ),
+            1
+        )
+    }
+
+    private fun connectToESP32() {
+        val paired = btAdapter.bondedDevices
+
+        for (device in paired) {
+            if (device.name == DEVICE_NAME) {
+                btDevice = device
+                break
+            }
+        }
+
+        btSocket = btDevice.createRfcommSocketToServiceRecord(BT_UUID)
+        btSocket!!.connect()
+
+        outputStream = btSocket!!.outputStream
+    }
+
+    private fun readBluetoothData() {
+        Thread {
+            try {
+                val inputStream: InputStream = btSocket!!.inputStream
+                val buffer = ByteArray(1024)
+                var bytes: Int
+
+                while (true) {
+                    bytes = inputStream.read(buffer)
+                    val msg = String(buffer, 0, bytes).trim()
+
+                    runOnUiThread {
+                        txtData.text = msg
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }.start()
+    }
+
+    private fun sendToESP32(msg: String) {
+        try {
+            outputStream?.write((msg + "\n").toByteArray())
+        } catch (_: Exception) {
+        }
+    }
+}
